@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title></title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style type="text/css">
+        html, body {
+            height: 100%;
+            width: 100%;
+        }
+        svg {
+            outline: thin solid green;
+        }
+    </style>
+</head>
+<body>
+
+    <svg id="main"></svg>
+
+    <script>
+      // settings
+      const width      = 700;
+      const height     = 700;
+      const MIN_RADIUS = 10;
+      const RECT_WIDTH = 70;
+      const RECT_HEIGHT = 70;
+      const CLUSTER_CNT = 7;
+      const VIEWBOX = [-width, -height, width * 2, height * 2];
+
+      var data     = [];
+      const color = d3.scaleOrdinal(d3.schemeCategory10);
+      for (let i = 0; i < 50; i++) {
+      	const group = Math.floor(Math.random() * CLUSTER_CNT);
+        data.push({
+                    x:    Math.random() * width,
+                    y:    Math.random() * height,
+                    r:    Math.random() * MIN_RADIUS,
+                    data: {
+                    	color: color(group),
+                      group: group, 
+                    },
+                  });
+      }
+
+      const clusters = Array.from(Array(CLUSTER_CNT)).map((d, i, all) => ({
+      	x: width * (i + .5) / all.length, y: RECT_HEIGHT/2}))
+
+      // controls
+      const controls  = {};
+      controls.forces = 
+      	{
+        	collide: true,
+        	cluster: true,
+        	clusterCentroid: false
+      	};
+
+      // draw
+      var svg = d3.select("#main");
+      svg
+        .attr('width', width)
+        .attr('height', height)
+        .attr("viewbox", VIEWBOX.join(' '));
+      const g     = svg.append('g');
+      var squares =
+            g.selectAll("rect")
+             .data(clusters)
+             .enter()
+             .append("rect")
+             .attr("x", (d, i) => d.x - RECT_WIDTH/2)
+             .attr("y", d => d.y - RECT_HEIGHT/2)
+             .attr('width', RECT_WIDTH)
+             .attr('height', RECT_HEIGHT)
+
+      // Use D3 to draw the circles
+      var circles = g
+        .selectAll("circle")
+        .data(data)
+        .enter()
+        .append("circle")
+        .attr("cx", function (d) { return d.x; })
+        .attr("cy", function (d) { return d.y; })
+        .attr("r", function (d) { return d.r; })
+        .style("fill", d => d.data.color)
+        .on('click', (e, d) => {
+          e.stopPropagation();
+          console.log(d)
+        });
+
+      {
+        const simulation = d3.forceSimulation(data)
+          // .force("x", d3.forceX(width / 2).strength(0.01))
+          // .force("y", d3.forceY(height / 2).strength(0.01))
+                             .force("cluster", cluster())
+                             .force("collide", collide());
+
+        circles
+          .call(drag(simulation));
+
+        function ticked() {
+          circles
+            .attr("cx", function (d) { return d.x; })
+            .attr("cy", function (d) { return d.y; });
+        }
+
+        simulation.on("tick", ticked);
+
+        function cluster() {
+          const strength = 0.7;
+          let nodes;
+
+          function force(alpha) {
+            const centroids = d3.rollup(nodes, centroid, d => d.data.group);
+
+            const l = alpha * strength;
+            for (const d of nodes) {
+              if (!controls.forces.cluster) continue;
+              const {x: cx, y: cy} =
+                      !controls.forces.clusterCentroid
+                      	? clusters[d.data.group]
+              			: centroids.get(d.data.group);
+              d.vx -= (d.x - cx) * l;
+              d.vy -= (d.y - cy) * l;
+            }
+          }
+
+          force.initialize = _ => nodes = _;
+
+          return force;
+        }
+
+        function collide() {
+          const alpha           = 0.4;
+          const ingroupSpacing  = 2;
+          const outgroupSpacing = 10;
+
+          let nodes;
+          let maxRadius;
+
+          function force() {
+            const quadtree = d3.quadtree(nodes, d => d.x, d => d.y);
+            for (const d of nodes) {
+              const r   = d.r + maxRadius;
+              const nx1 = d.x - r, ny1 = d.y - r;
+              const nx2 = d.x + r, ny2 = d.y + r;
+              quadtree.visit((q, x1, y1, x2, y2) => {
+                if (!q.length) do {
+                  if (q.data !== d) {
+                    const r = d.r + q.data.r + (d.data.group === q.data.data.group ? ingroupSpacing : outgroupSpacing);
+                    let x   = d.x - q.data.x, y = d.y - q.data.y, l = Math.hypot(x, y);
+                    if (l < r) {
+                      l = (l - r) / l * alpha;
+                      d.x -= x *= l, d.y -= y *= l;
+                      q.data.x += x, q.data.y += y;
+                    }
+                  }
+                } while (q = q.next);
+                return x1 > nx2 || x2 < nx1 || y1 > ny2 || y2 < ny1;
+              });
+            }
+          }
+
+          force.initialize = _ => maxRadius = d3.max(nodes = _, d => d.r) + Math.max(ingroupSpacing, outgroupSpacing);
+
+          return force;
+        }
+
+        function centroid(nodes) {
+          let x = 0;
+          let y = 0;
+          let z = 0;
+          for (const d of nodes) {
+            let k = d.r ** 2;
+            x += d.x * k;
+            y += d.y * k;
+            z += k;
+          }
+          return {x: x / z, y: y / z};
+        }
+
+        function drag(simulation) {
+          function dragstarted(event, d) {
+            if (!event.controls.forces) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          }
+
+          function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+          }
+
+          function dragended(event, d) {
+            if (!event.controls.forces) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }
+
+          return d3.drag()
+                   .on("start", dragstarted)
+                   .on("drag", dragged)
+                   .on("end", dragended);
+        }
+
+        const handleZoom = (e) => g.attr('transform', e.transform);
+        const zoom       = d3.zoom().on('zoom', handleZoom);
+        svg.call(zoom);
+        svg.on('click', (e) => {
+          console.log({e});
+          simulation.alpha(1)
+          simulation.alphaTarget(.3)
+          if(!e.shiftKey )controls.forces.cluster = !controls.forces.cluster;
+          else controls.forces.clusterCentroid = !controls.forces.clusterCentroid;
+        })
+      }
+    </script>
+
+</body>
+</html>
